@@ -1,0 +1,24 @@
+[package]
+name = "they-cant-be-regenerated"
+version = "0.1.0"
+description = "Local card art and print workbench"
+authors = ["Manus AI"]
+edition = "2021"
+
+[lib]
+name = "they_cant_be_regenerated_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
