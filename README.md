@@ -66,6 +66,21 @@ CardRenderingEngine
 
 The card itself is represented as a structured document rather than a single flattened image. This allows individual elements such as artwork, frames, text, masks, symbols, and custom layers to be edited independently.
 
+## Rodar localmente
+
+```bash
+pnpm install --no-frozen-lockfile
+pnpm dev
+```
+
+Para validar antes de empacotar:
+
+```bash
+./node_modules/.bin/tsc -b --pretty false
+./node_modules/.bin/vitest run --reporter=dot
+./node_modules/.bin/vite build
+```
+
 ## Technology
 
 * Tauri
