@@ -7,18 +7,14 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
-  CircleHelp,
   Download,
   FileDown,
   FolderOpen,
   ImagePlus,
   Layers3,
-  LayoutGrid,
   Loader2,
   Lock,
   Palette,
-  PanelLeftClose,
-  PanelLeftOpen,
   Plus,
   RefreshCw,
   Save,
@@ -29,20 +25,24 @@ import {
   Upload,
 } from 'lucide-react'
 import { parseDeckText, aggregateEntries, totalCards } from './core/deckParser'
-import { resolveDeck } from './core/cardResolver'
+import { compactPreviewDataUrl, type CardConjurerResult } from './core/cardConjurerAdapter'
+import CardConjurerEditor from './components/CardConjurerEditor'
+import CardConjurerRenderHost, { type CardConjurerRenderHandle } from './components/CardConjurerRenderHost'
+import { clearCardCache, resolveDeck } from './core/cardResolver'
 import { calculatePageLayout, downloadBlob, generatePdf, validatePdfBlob } from './core/pdfExport'
 import {
   DEFAULT_PRINT_SETTINGS,
   DEFAULT_TRANSFORM,
   imageForCard,
   isBasicLand,
+  normalizeLanguage,
   type ArtAsset,
   type CardDefinition,
   type CardPrint,
   type ProjectFile,
   type PrintSettings,
 } from './core/models'
-import { createProject, discardRecovery, hasRecovery, loadProject, parseProject, saveProject, serializeProject } from './core/storage'
+import { createProject, discardRecovery, hasRecovery, loadProject, parseProject, saveProject, saveProjectWithRecovery, serializeProject } from './core/storage'
 import './styles/app.css'
 
 type Step = 1 | 2 | 3
@@ -68,11 +68,11 @@ function formatBytes(value: number): string {
 
 function applyPrint(card: CardDefinition, print?: CardPrint): CardDefinition {
   if (!print) return card
-  return { ...card, selectedPrint: print, selectedLanguage: print.language, selectedImageUri: print.imageUri || card.data?.imageUris?.normal, customArt: undefined, artSource: 'original' }
+  return { ...card, selectedPrint: print, selectedLanguage: normalizeLanguage(print.language), selectedImageUri: print.imageUri || card.data?.imageUris?.normal, artSource: 'original', activeRepresentation: 'original' }
 }
 
 function printsForLanguage(card: CardDefinition, language: string): CardPrint[] {
-  return (card.availablePrints || []).filter((print) => print.language === language)
+  return (card.availablePrints || []).filter((print) => normalizeLanguage(print.language) === normalizeLanguage(language))
 }
 
 function OriginalCardPreview({ card, compact = false }: { card: CardDefinition; compact?: boolean }) {
@@ -98,7 +98,7 @@ function App() {
   const [filter, setFilter] = useState<'all' | 'validated' | 'issues'>('all')
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null)
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [editorCardId, setEditorCardId] = useState<string | null>(null)
   const [dirty, setDirty] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const [exporting, setExporting] = useState(false)
@@ -107,6 +107,8 @@ function App() {
   const fileInput = useRef<HTMLInputElement>(null)
   const projectInput = useRef<HTMLInputElement>(null)
   const artInput = useRef<HTMLInputElement>(null)
+  const cardConjurerRenderRef = useRef<CardConjurerRenderHandle>(null)
+  const compactPreviewCache = useRef<{ source: string; compact: string } | null>(null)
 
   const cards = project.cards
   const validated = cards.length > 0 && cards.every((card) => card.status === 'validated')
@@ -124,8 +126,7 @@ function App() {
     if (!dirty) return
     const timer = window.setTimeout(() => {
       try {
-        saveProject(project, true)
-        saveProject(project)
+        saveProjectWithRecovery(project)
         setDirty(false)
       } catch {
         setToast('Não foi possível salvar automaticamente. Exporte o projeto para manter uma cópia.')
@@ -145,7 +146,7 @@ function App() {
       const modifier = event.metaKey || event.ctrlKey
       if (modifier && event.key.toLowerCase() === 's') {
         event.preventDefault()
-        if (event.shiftKey) exportProjectFile()
+        if (event.shiftKey) saveProjectFile()
         else saveNow()
       }
     }
@@ -165,6 +166,60 @@ function App() {
 
   function updateCard(id: string, updater: (card: CardDefinition) => CardDefinition): void {
     updateProject((current) => ({ ...current, cards: current.cards.map((card) => card.id === id ? updater(card) : card) }))
+  }
+
+  function openEditor(cardId: string): void {
+    setSelectedCardId(cardId)
+    setEditorCardId(cardId)
+  }
+
+  function closeEditor(): void {
+    setEditorCardId(null)
+  }
+
+  async function commitCardConjurer(cardId: string, result: CardConjurerResult): Promise<void> {
+    const compactPreview = compactPreviewCache.current?.source === result.preview
+      ? compactPreviewCache.current.compact
+      : await compactPreviewDataUrl(result.preview)
+    compactPreviewCache.current = { source: result.preview, compact: compactPreview }
+    updateCard(cardId, (card) => ({
+      ...card,
+      activeRepresentation: 'editor',
+      cardConjurerDocument: result.document,
+      editorPreviewDataUrl: compactPreview,
+      editorPreviewUpdatedAt: new Date().toISOString(),
+    }))
+    setToast(`Documento CardConjurer salvo para ${cardTitle(cards.find((card) => card.id === cardId) || { inputName: 'carta' } as CardDefinition)}.`)
+  }
+
+  function setOriginalRepresentation(cardId: string): void {
+    updateCard(cardId, (card) => ({ ...card, activeRepresentation: 'original' }))
+  }
+
+  function removeBlankCard(cardId: string): void {
+    const card = cards.find((item) => item.id === cardId)
+    if (!card || card.inputName !== 'Blank Card') return
+    updateProject((current) => ({ ...current, cards: current.cards.filter((item) => item.id !== cardId) }))
+    setSelectedCardId(null)
+    setToast('Blank Card removida.')
+  }
+
+  function createBlankCard(): void {
+    const blank: CardDefinition = {
+      id: crypto.randomUUID(),
+      quantity: 1,
+      inputName: 'Blank Card',
+      status: 'validated',
+      data: { name: 'Blank Card', layout: 'normal', faces: [{ name: 'Blank Card' }], source: 'local' },
+      selectedImageUri: '/img/blank.png',
+      artSource: 'original',
+      activeRepresentation: 'original',
+      transform: { ...DEFAULT_TRANSFORM },
+    }
+    updateProject((current) => ({ ...current, cards: [...current.cards, blank] }))
+    setSelectedCardId(blank.id)
+    setActiveStep(2)
+    setToast('Blank Card adicionada. Entre no editor para construir a carta do zero.')
   }
 
   async function importDeck(text: string): Promise<void> {
@@ -209,15 +264,30 @@ function App() {
     }
   }
 
-  function exportProjectFile(): void {
+  async function saveProjectFile(): Promise<void> {
     const blob = new Blob([serializeProject(project)], { type: 'application/json' })
+    const suggestedName = `${project.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase() || 'project'}.tcbgr.json`
+    const picker = (window as Window & { showSaveFilePicker?: (options?: unknown) => Promise<{ createWritable: () => Promise<{ write: (data: Blob) => Promise<void>; close: () => Promise<void> }> }> }).showSaveFilePicker
+    if (picker) {
+      try {
+        const handle = await picker({ suggestedName, types: [{ description: 'TCBR project', accept: { 'application/json': ['.tcbgr.json', '.json'] } }] })
+        const writable = await handle.createWritable()
+        await writable.write(blob)
+        await writable.close()
+        setDirty(false)
+        setToast('Projeto salvo no local escolhido.')
+        return
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') return
+      }
+    }
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = `${project.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase() || 'project'}.tcbgr.json`
+    anchor.download = suggestedName
     anchor.click()
     URL.revokeObjectURL(url)
-    setToast('Arquivo de projeto exportado.')
+    setToast('Projeto baixado. O navegador definiu a pasta de destino.')
   }
 
   function onProjectFile(event: ChangeEvent<HTMLInputElement>): void {
@@ -253,9 +323,11 @@ function App() {
   }
 
   function selectLanguage(cardId: string, language: string): void {
+    if (!language.trim()) return
     const card = cards.find((item) => item.id === cardId)
-    const print = card?.availablePrints?.find((item) => item.language === language) || card?.availablePrints?.[0]
+    const print = card?.availablePrints?.find((item) => normalizeLanguage(item.language) === normalizeLanguage(language))
     if (print) updateCard(cardId, (current) => applyPrint(current, print))
+    else setToast(`Nenhuma impressão em ${languageLabel(language)} foi encontrada para esta carta.`)
   }
 
   function applyBulkLanguage(language: string): void {
@@ -276,9 +348,14 @@ function App() {
     const dataUrl = await readFileAsDataUrl(file)
     const dimensions = await readImageDimensions(dataUrl)
     const asset: ArtAsset = { id: crypto.randomUUID(), fileName: file.name, mimeType: file.type, dataUrl, width: dimensions.width, height: dimensions.height }
-    updateCard(selectedCard.id, (card) => ({ ...card, customArt: asset, selectedImageUri: undefined, artSource: 'custom', transform: { ...DEFAULT_TRANSFORM } }))
+    updateCard(selectedCard.id, (card) => ({ ...card, customArt: { ...asset, sourceType: 'local' }, selectedImageUri: undefined, artSource: 'custom', activeRepresentation: 'custom', transform: { ...DEFAULT_TRANSFORM } }))
     setToast(`Arte própria adicionada para ${cardTitle(selectedCard)}.`)
     event.target.value = ''
+  }
+
+  function clearCache(): void {
+    clearCardCache()
+    setToast('Cache de cartas e impressões removido. Novas consultas usarão dados atualizados.')
   }
 
   function updatePrint<K extends keyof PrintSettings>(key: K, value: PrintSettings[K]): void {
@@ -293,7 +370,10 @@ function App() {
     setExporting(true)
     setExportProgress({ done: 0, total })
     try {
-      const result = await generatePdf(cards, project.printSettings, (done, totalCards) => setExportProgress({ done, total: totalCards }))
+      const result = await generatePdf(cards, project.printSettings, (done, totalCards) => setExportProgress({ done, total: totalCards }), async (card) => {
+        if (!cardConjurerRenderRef.current) throw new Error('O renderer CardConjurer ainda não está pronto.')
+        return cardConjurerRenderRef.current.render(card)
+      })
       const validation = await validatePdfBlob(result.blob, result)
       if (!validation.valid) {
         setToast(`PDF rejeitado: ${validation.messages.join(' ')}`)
@@ -319,16 +399,7 @@ function App() {
 
   return (
     <div className="app-shell">
-      <header className="topbar">
-        <div className="brand-lockup"><div className="brand-mark"><Layers3 size={19} /></div><div><strong>THEY CAN'T BE REGENERATED</strong><span>LOCAL CARD WORKBENCH</span></div></div>
-        <div className="topbar-actions">
-          <span className={`save-state ${dirty ? 'dirty' : ''}`}><span className="save-dot" />{dirty ? 'Unsaved changes' : 'Saved locally'}</span>
-          <button className="icon-button" type="button" title="Open project" onClick={() => projectInput.current?.click()}><FolderOpen size={17} /></button>
-          <button className="icon-button" type="button" title="Save project" onClick={saveNow}><Save size={17} /></button>
-          <button className="icon-button" type="button" title="Export project" onClick={exportProjectFile}><Download size={17} /></button>
-          <div className="avatar">TC</div>
-        </div>
-      </header>
+      <header className="topbar"><h1 className="site-title">THEY CAN'T BE REGENERATED</h1></header>
 
       <div className="stepbar">
         <div className="stepbar-inner">
@@ -340,21 +411,10 @@ function App() {
         </div>
       </div>
 
-      <div className="workspace">
-        <aside className={`sidebar ${sidebarOpen ? '' : 'collapsed'}`}>
-          {sidebarOpen ? <>
-            <div className="sidebar-heading"><span>PROJECT</span><button className="plain-icon" type="button" onClick={() => setSidebarOpen(false)}><PanelLeftClose size={16} /></button></div>
-            <div className="project-name"><div className="project-icon"><LayoutGrid size={16} /></div><div><strong>{project.name}</strong><span>{dirty ? 'Changes pending save' : 'Local project file'}</span></div></div>
-            <div className="sidebar-heading"><span>PIPELINE</span></div>
-            <div className="pipeline-mini"><PipelineItem n="01" label="Import source" done={cards.length > 0} active={activeStep === 1} /><PipelineItem n="02" label="Resolve cards" done={validated} active={activeStep === 2} /><PipelineItem n="03" label="Prepare output" done={validated} active={activeStep === 3} /></div>
-            <div className="stat-grid"><div><span>DEFINITIONS</span><strong>{cards.length}</strong></div><div><span>QUANTITY</span><strong>{total}</strong></div><div><span>ART READY</span><strong>{cards.filter((card) => card.selectedImageUri).length}</strong></div><div><span>PAGES</span><strong>{cards.length ? pageLayout.pageCount : 0}</strong></div></div>
-            <div className="sidebar-footer"><div className="local-badge"><CheckCircle2 size={15} /><span>LOCAL-FIRST<br /><small>No account required</small></span></div><button className="help-link" type="button"><CircleHelp size={14} /> Help / keyboard shortcuts</button></div>
-          </> : <button className="collapsed-toggle" type="button" onClick={() => setSidebarOpen(true)}><PanelLeftOpen size={17} /></button>}
-        </aside>
-
+      <div className="workspace workspace-full">
         <main className="main-content">
-          {activeStep === 1 && <ImportStep deckText={deckText} setDeckText={updateDeckText} onImport={() => importDeck(deckText)} onFile={() => fileInput.current?.click()} onDrop={onDeckDrop} cards={cards} filteredCards={filteredCards} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} isResolving={isResolving} progress={progress} onResolve={() => importDeck(deckText)} />}
-          {activeStep === 2 && <ArtStep cards={cards} filteredCards={filteredCards} selectedCard={selectedCard} onSelectCard={setSelectedCardId} onSelectPrint={selectPrint} onSelectLanguage={selectLanguage} onChooseOwnArt={() => artInput.current?.click()} />}
+          {activeStep === 1 && <ImportStep deckText={deckText} setDeckText={updateDeckText} onImport={() => importDeck(deckText)} onFile={() => fileInput.current?.click()} onDrop={onDeckDrop} cards={cards} filteredCards={filteredCards} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} isResolving={isResolving} progress={progress} onResolve={() => importDeck(deckText)} onOpenProject={() => projectInput.current?.click()} onSaveProject={saveProjectFile} onClearCache={clearCache} />}
+          {activeStep === 2 && (editorCardId ? <CardConjurerEditor card={cards.find((card) => card.id === editorCardId) || selectedCard || cards[0]} onSaved={(result) => commitCardConjurer(editorCardId, result)} onInitialRender={() => undefined} onClose={closeEditor} /> : <ArtStep cards={cards} filteredCards={filteredCards} selectedCard={selectedCard} onSelectCard={setSelectedCardId} onSelectPrint={selectPrint} onSelectLanguage={selectLanguage} onChooseOwnArt={() => artInput.current?.click()} onOpenEditor={openEditor} onUseOriginal={setOriginalRepresentation} onCreateBlank={createBlankCard} onRemoveBlank={removeBlankCard} />)}
           {activeStep === 3 && <PrintStep project={project} pageLayout={pageLayout} onPrintChange={updatePrint} onExport={exportPdf} exporting={exporting} exportProgress={exportProgress} />}
         </main>
       </div>
@@ -364,6 +424,7 @@ function App() {
       <input ref={artInput} className="hidden-input" type="file" accept="image/png,image/jpeg,image/webp" onChange={onArtFile} />
       {recoveryAvailable && <div className="recovery-banner"><RefreshCw size={15} /><span>A recovery version is available from the last session.</span><button type="button" onClick={restoreRecovery}>Restore</button><button className="dismiss" type="button" onClick={() => discardRecovery()}>Dismiss</button></div>}
       {toast && <div className="toast"><CheckCircle2 size={16} />{toast}</div>}
+      <CardConjurerRenderHost ref={cardConjurerRenderRef} />
     </div>
   )
 }
@@ -373,44 +434,48 @@ function StepNav({ step, activeStep, label, detail, locked, onClick }: { step: S
   return <button className={`step-nav ${activeStep === step ? 'active' : ''} ${complete ? 'complete' : ''}`} type="button" onClick={onClick}><span className="step-number">{complete ? <Check size={14} /> : locked ? <Lock size={12} /> : `0${step}`}</span><span className="step-copy"><strong>{label}</strong><small>{detail}</small></span>{activeStep === step && <span className="active-indicator" />}</button>
 }
 
-function PipelineItem({ n, label, done, active }: { n: string; label: string; done: boolean; active: boolean }) {
-  return <div className={`pipeline-item ${done ? 'done' : ''} ${active ? 'active' : ''}`}><span>{done ? <Check size={12} /> : n}</span><strong>{label}</strong>{active && <i />}</div>
-}
-
-function ImportStep({ deckText, setDeckText, onImport, onFile, onDrop, cards, filteredCards, search, setSearch, filter, setFilter, isResolving, progress, onResolve }: { deckText: string; setDeckText: (value: string) => void; onImport: () => void; onFile: () => void; onDrop: (event: DragEvent<HTMLDivElement>) => void; cards: CardDefinition[]; filteredCards: CardDefinition[]; search: string; setSearch: (value: string) => void; filter: 'all' | 'validated' | 'issues'; setFilter: (value: 'all' | 'validated' | 'issues') => void; isResolving: boolean; progress: { done: number; total: number }; onResolve: () => void }) {
+function ImportStep({ deckText, setDeckText, onImport, onFile, onDrop, cards, filteredCards, search, setSearch, filter, setFilter, isResolving, progress, onResolve, onOpenProject, onSaveProject, onClearCache }: { deckText: string; setDeckText: (value: string) => void; onImport: () => void; onFile: () => void; onDrop: (event: DragEvent<HTMLDivElement>) => void; cards: CardDefinition[]; filteredCards: CardDefinition[]; search: string; setSearch: (value: string) => void; filter: 'all' | 'validated' | 'issues'; setFilter: (value: 'all' | 'validated' | 'issues') => void; isResolving: boolean; progress: { done: number; total: number }; onResolve: () => void; onOpenProject: () => void; onSaveProject: () => void; onClearCache: () => void }) {
   const orderedCards = [...filteredCards].sort((a, b) => { const aIssue = a.status === 'validated' ? 1 : 0; const bIssue = b.status === 'validated' ? 1 : 0; return aIssue - bIssue || cardTitle(a).localeCompare(cardTitle(b)) })
-  return <div className="step-panel"><div className="page-header"><div><div className="eyebrow">STAGE 01 / FOUNDATION</div><h1>Import & validate your deck</h1><p>Bring in a plain-text list or deck export. The resolver keeps card identity, layout and metadata separate from artwork.</p></div></div>
+  return <div className="step-panel"><div className="page-header"><div><div className="eyebrow">STAGE 01 / FOUNDATION</div><h1>Import & validate your deck</h1><p>Bring in a plain-text list or deck export. The resolver keeps card identity, layout and metadata separate from artwork.</p></div></div><div className="project-actions-bar" aria-label="Project actions"><button className="secondary-button compact-button" type="button" onClick={onOpenProject}><FolderOpen size={14} /> Open project</button><button className="secondary-button compact-button" type="button" onClick={onSaveProject}><Save size={14} /> Save project</button><button className="secondary-button compact-button" type="button" onClick={onClearCache}><Trash2 size={14} /> Clear cache</button></div>
     <section className="import-grid"><div className="source-panel panel"><div className="panel-header"><div><span className="panel-kicker">DECK SOURCE</span><h2>Paste a deck list</h2></div><button className="text-button" type="button" onClick={() => setDeckText(SAMPLE_DECK)}>Load sample</button></div><textarea value={deckText} onChange={(event) => setDeckText(event.target.value)} placeholder={'1 Sol Ring\n1 Arcane Signet\n1 Command Tower\n\nSupports quantity, [SET 123], and common exports.'} /><div className="source-footer"><span><SlidersHorizontal size={14} /> Parser accepts quantity + set metadata</span><button className="primary-button" type="button" onClick={onImport} disabled={isResolving || !deckText.trim()}>{isResolving ? <><Loader2 className="spin" size={15} /> Resolving {progress.done}/{progress.total}</> : <><Upload size={15} /> Import & resolve</>}</button></div></div>
       <div className="drop-panel panel" onDragOver={(event) => event.preventDefault()} onDrop={onDrop}><div className="drop-inner"><div className="drop-icon"><FileDown size={22} /></div><h3>Drop a deck file here</h3><p>.txt, .csv, .dek, or .dec</p><button className="secondary-button" type="button" onClick={onFile}><FolderOpen size={15} /> Choose file</button></div></div></section>
     {cards.length > 0 ? <section className="cards-section"><div className="section-heading"><div><span className="panel-kicker">RESOLUTION QUEUE</span><h2>Card definitions <span>{cards.length}</span></h2></div><div className="list-tools"><div className="search-field"><Search size={14} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search cards" /></div><select value={filter} onChange={(event) => setFilter(event.target.value as 'all' | 'validated' | 'issues')}><option value="all">All states</option><option value="validated">Validated</option><option value="issues">Needs review</option></select>{cards.some((card) => card.status !== 'validated') && <button className="secondary-button compact-button" type="button" onClick={onResolve}><RefreshCw size={14} /> Retry unresolved</button>}</div></div><div className="card-table"><div className="card-table-head"><span>IDENTITY</span><span>SET / COLLECTOR</span><span>QTY</span><span>STATUS</span><span /></div>{orderedCards.map((card) => <div className="card-row" key={card.id}><div className="card-identity"><div className="mini-art">{imageForCard(card) ? <img src={imageForCard(card)} alt="" /> : <ImagePlus size={15} />}</div><div><strong>{cardTitle(card)}</strong><span>{card.data?.faces?.length && card.data.faces.length > 1 ? 'Double-faced' : card.data?.layout || 'Unresolved'}</span></div></div><span className="muted-cell">{card.data?.setName || '—'} <small>{card.data?.collectorNumber || ''}</small></span><strong className="quantity-cell">{card.quantity}×</strong><div><StatusPill status={card.status} />{card.resolverMessage && <small className="resolver-message">{card.resolverMessage}</small>}</div><button className="row-action" type="button" onClick={() => navigator.clipboard?.writeText(cardTitle(card))}>Copy name</button></div>)}</div>{filteredCards.length === 0 && <EmptyState icon={Search} title="No cards match" description="Try a different search or filter." />}</section> : <EmptyState icon={Upload} title="Your deck will appear here" description="Import a deck to begin the validation pipeline." />}</div>
 }
 
-function ArtStep({ cards, filteredCards, selectedCard, onSelectCard, onSelectPrint, onSelectLanguage, onChooseOwnArt }: { cards: CardDefinition[]; filteredCards: CardDefinition[]; selectedCard?: CardDefinition; onSelectCard: (id: string) => void; onSelectPrint: (cardId: string, printId: string) => void; onSelectLanguage: (cardId: string, language: string) => void; onChooseOwnArt: () => void }) {
+function ArtStep({ cards, filteredCards, selectedCard, onSelectCard, onSelectPrint, onSelectLanguage, onChooseOwnArt, onOpenEditor, onUseOriginal, onCreateBlank, onRemoveBlank }: { cards: CardDefinition[]; filteredCards: CardDefinition[]; selectedCard?: CardDefinition; onSelectCard: (id: string) => void; onSelectPrint: (cardId: string, printId: string) => void; onSelectLanguage: (cardId: string, language: string) => void; onChooseOwnArt: () => void; onOpenEditor: (id: string) => void; onUseOriginal: (id: string) => void; onCreateBlank: () => void; onRemoveBlank: (id: string) => void }) {
   const regularCards = filteredCards.filter((card) => !isBasicLand(card.data) && card.data?.layout !== 'land')
   const landCards = filteredCards.filter((card) => isBasicLand(card.data) || card.data?.layout === 'land')
-  return <div className="step-panel"><div className="page-header"><div><div className="eyebrow">STAGE 02 / CARD-BY-CARD ART SETUP</div><h1>Configure each imported card</h1><p>Choose whether each card uses your own art or an original print. Select a card on the left to load only its available arts on the right.</p></div></div><div className="two-column-art-workspace"><section className="imported-cards-panel panel"><div className="panel-header"><div><span className="panel-kicker">IMPORTED CARDS</span><h2>{cards.length} cards</h2></div><span className="card-by-card-note">One card at a time</span></div><CardRows cards={regularCards} selectedCard={selectedCard} onSelectCard={onSelectCard} /><details className="lands-group" open={landCards.length > 0}><summary><span>LANDS</span><strong>{landCards.length}</strong></summary><CardRows cards={landCards} selectedCard={selectedCard} onSelectCard={onSelectCard} /></details>{filteredCards.length === 0 && <EmptyState icon={Search} title="No cards match" description="Try another search." />}</section><section className="art-options-panel panel">{selectedCard ? <ArtOptions card={selectedCard} onSelectPrint={(printId) => onSelectPrint(selectedCard.id, printId)} onSelectLanguage={(language) => onSelectLanguage(selectedCard.id, language)} onChooseOwnArt={onChooseOwnArt} /> : <EmptyState icon={Palette} title="Select a card" description="The available arts will appear here." />}</section></div></div>
+  return <div className="step-panel"><div className="page-header"><div><div className="eyebrow">STAGE 02 / CARD STUDIO</div><h1>Customize each card with CardConjurer</h1><p>Escolha de forma explícita de onde vem a aparência da carta. O original, o documento CardConjurer e a arte própria são representações independentes e não destrutivas.</p></div><button className="primary-button" type="button" onClick={onCreateBlank}><Plus size={15} /> New blank card</button></div><div className="two-column-art-workspace"><section className="imported-cards-panel panel"><div className="panel-header"><div><span className="panel-kicker">CARD STUDIO QUEUE</span><h2>{cards.length} cards</h2></div><span className="card-by-card-note">Select a card to edit</span></div><div className="queue-section"><div className="queue-section-heading"><span>NORMAL CARDS</span><strong>{regularCards.length}</strong></div><CardRows className="regular-card-list" cards={regularCards} selectedCard={selectedCard} onSelectCard={onSelectCard} /></div><div className="lands-group"><div className="queue-section-heading"><span>LANDS</span><strong>{landCards.length}</strong></div><CardRows className="land-card-list" cards={landCards} selectedCard={selectedCard} onSelectCard={onSelectCard} /></div>{filteredCards.length === 0 && <EmptyState icon={Search} title="No cards match" description="Try another search." />}</section><section className="art-options-panel panel">{selectedCard ? <ArtOptions card={selectedCard} onSelectPrint={(printId) => onSelectPrint(selectedCard.id, printId)} onSelectLanguage={(language) => onSelectLanguage(selectedCard.id, language)} onChooseOwnArt={onChooseOwnArt} onOpenEditor={() => onOpenEditor(selectedCard.id)} onUseOriginal={() => onUseOriginal(selectedCard.id)} onRemoveBlank={() => onRemoveBlank(selectedCard.id)} /> : <EmptyState icon={Palette} title="Select a card" description="The available prints and editor actions will appear here." />}</section></div></div>
 }
 
-function CardRows({ cards, selectedCard, onSelectCard }: { cards: CardDefinition[]; selectedCard?: CardDefinition; onSelectCard: (id: string) => void }) {
-  return <div className="imported-cards-list">{cards.map((card) => <ImportedCardRow key={card.id} card={card} active={selectedCard?.id === card.id} onSelect={() => onSelectCard(card.id)} />)}</div>
+function CardRows({ cards, selectedCard, onSelectCard, className = '' }: { cards: CardDefinition[]; selectedCard?: CardDefinition; onSelectCard: (id: string) => void; className?: string }) {
+  return <div className={`imported-cards-list ${className}`}>{cards.map((card) => <ImportedCardRow key={card.id} card={card} active={selectedCard?.id === card.id} onSelect={() => onSelectCard(card.id)} />)}</div>
 }
 
 function ImportedCardRow({ card, active, onSelect }: { card: CardDefinition; active: boolean; onSelect: () => void }) {
-  const image = card.customArt?.dataUrl || card.selectedImageUri || card.data?.imageUris?.normal || card.data?.imageUris?.large
-  const source = card.customArt ? 'Own art' : card.selectedPrint ? 'Original art' : 'Choose art'
-  return <button type="button" className={`imported-card-row ${active ? 'active' : ''}`} onClick={onSelect}><span className="imported-card-thumb">{image ? <img src={image} alt="" /> : <ImagePlus size={16} />}</span><span className="imported-card-copy"><strong>{cardTitle(card)}</strong><small>{card.data?.setName || 'Unresolved'} · {card.quantity}×</small><em>{source} · {card.selectedLanguage ? languageLabel(card.selectedLanguage) : 'Language not selected'}</em></span><StatusPill status={card.status} /></button>
+  const image = imageForCard(card)
+  const source = card.activeRepresentation === 'editor' ? 'CardConjurer document' : card.customArt ? 'Own art' : card.selectedPrint ? 'Original art' : 'Choose art'
+  return <button type="button" className={`imported-card-row ${active ? 'active' : ''}`} onClick={onSelect}><span className="imported-card-thumb">{image ? <img src={image} alt="" /> : <ImagePlus size={16} />}</span><span className="imported-card-copy"><strong>{cardTitle(card)}</strong><small>{card.data?.setName || 'Blank card'} · {card.quantity}×</small><em>{source} · {card.selectedLanguage ? languageLabel(card.selectedLanguage) : 'Language not selected'}</em></span>{card.cardConjurerDocument && <span className="editor-badge">CC</span>}<StatusPill status={card.status} /></button>
 }
 
-function ArtOptions({ card, onSelectPrint, onSelectLanguage, onChooseOwnArt }: { card: CardDefinition; onSelectPrint: (printId: string) => void; onSelectLanguage: (language: string) => void; onChooseOwnArt: () => void }) {
+function ArtOptions({ card, onSelectPrint, onSelectLanguage, onChooseOwnArt, onOpenEditor, onUseOriginal, onRemoveBlank }: { card: CardDefinition; onSelectPrint: (printId: string) => void; onSelectLanguage: (language: string) => void; onChooseOwnArt: () => void; onOpenEditor: () => void; onUseOriginal: () => void; onRemoveBlank: () => void }) {
   const prints = card.availablePrints || []
-  const languages = [...new Set(prints.map((print) => print.language))].sort()
-  const isOwnArt = Boolean(card.customArt)
+  const selectedLanguage = normalizeLanguage(card.selectedLanguage)
+  const languages = [...new Set(prints.map((print) => normalizeLanguage(print.language)).filter(Boolean))]
+  if (!languages.includes('pt')) languages.push('pt')
+  languages.sort()
+  const effectiveLanguage = selectedLanguage || languages[0] || ''
+  const visiblePrints = effectiveLanguage ? prints.filter((print) => normalizeLanguage(print.language) === effectiveLanguage) : prints
+  const isOwnArt = card.activeRepresentation === 'custom'
+  const isEditor = card.activeRepresentation === 'editor'
+  const isOriginal = !isOwnArt && !isEditor
   const originalImage = card.selectedPrint?.imageUri || card.data?.imageUris?.normal || card.data?.imageUris?.large
-  return <div className="art-options-content"><div className="panel-header"><div><span className="panel-kicker">SELECTED CARD</span><h2>{cardTitle(card)}</h2><span className="selected-card-meta">{card.data?.setName || 'Unresolved'} · {card.quantity}×</span></div><StatusPill status={card.status} /></div><div className="art-choice-buttons"><button type="button" className={`art-choice ${isOwnArt ? 'active' : ''}`} onClick={onChooseOwnArt}><ImagePlus size={16} /><span><strong>Use my own art</strong><small>{isOwnArt ? card.customArt?.fileName : 'Upload PNG, JPG or WEBP'}</small></span></button><button type="button" className={`art-choice ${!isOwnArt ? 'active' : ''}`} onClick={() => card.selectedPrint && onSelectPrint(card.selectedPrint.id)} disabled={!prints.length}><Palette size={16} /><span><strong>Use original art</strong><small>{isOwnArt ? 'Select an original print below' : 'Choose from available prints'}</small></span></button></div><label className="selected-language">Language<select value={card.selectedLanguage || ''} onChange={(event) => onSelectLanguage(event.target.value)} disabled={!languages.length}><option value="">Select language</option>{languages.map((language) => <option key={language} value={language}>{languageLabel(language)}</option>)}</select></label>{!isOwnArt && <div className="available-arts-panel"><div className="available-arts-heading"><div><span className="panel-kicker">ORIGINAL ARTS FOR THIS CARD</span><strong>{prints.length ? `${prints.length} print${prints.length === 1 ? '' : 's'} available` : 'No original prints available'}</strong></div>{originalImage && <img src={originalImage} alt={`Selected art for ${cardTitle(card)}`} />}</div><div className="available-arts-grid">{prints.map((print) => <button key={print.id} type="button" className={`available-art ${card.selectedPrint?.id === print.id ? 'selected' : ''}`} onClick={() => onSelectPrint(print.id)} disabled={!print.imageUri}><span className="available-art-image">{print.imageUri ? <img src={print.imageUri} alt={`${cardTitle(card)} — ${print.displayName}`} /> : <ImagePlus size={16} />}</span><span className="available-art-meta"><strong>{print.displayName}</strong><span>{languageLabel(print.language)} · {print.set.toUpperCase()} {print.collectorNumber}</span></span>{card.selectedPrint?.id === print.id && <CheckCircle2 className="available-art-check" size={16} />}</button>)}</div></div>}</div>
+  const languageOptions = languages.map((language) => ({ language, prints: prints.filter((print) => normalizeLanguage(print.language) === language) }))
+  return <div className="art-options-content"><div className="panel-header"><div><span className="panel-kicker">SELECTED CARD</span><h2>{cardTitle(card)}</h2><span className="selected-card-meta">{card.data?.setName || 'Blank card'} · {card.quantity}×</span></div><div className="panel-header-actions"><StatusPill status={card.status} />{card.inputName === 'Blank Card' && <button className="danger-button compact-button" type="button" onClick={onRemoveBlank} title="Remove Blank Card"><Trash2 size={13} /> Remove blank</button>}</div></div><div className="representation-picker"><div className="representation-picker-heading"><span className="panel-kicker">CARD APPEARANCE</span><small>Escolha uma única fonte principal para a representação visual.</small></div><div className="representation-actions three-way"><button type="button" className={isOriginal ? 'active' : ''} onClick={onUseOriginal} disabled={!prints.length}><Palette size={16} /><span><strong>Original print</strong><small>Selected official print</small></span></button><button type="button" className={isEditor ? 'active' : ''} onClick={onOpenEditor}><Layers3 size={16} /><span><strong>Open Editor</strong><small>{card.cardConjurerDocument ? 'Resume saved document' : 'Start with blank canvas'}</small></span></button><button type="button" className={isOwnArt ? 'active' : ''} onClick={onChooseOwnArt}><ImagePlus size={16} /><span><strong>Use my own art</strong><small>{card.customArt?.fileName || 'Upload a local image'}</small></span></button></div></div><label className="selected-language">Language<select value={effectiveLanguage} onChange={(event) => onSelectLanguage(event.target.value)} disabled={!languageOptions.length}>{languageOptions.map(({ language, prints: matchingPrints }) => <option key={language} value={language} disabled={!matchingPrints.length}>{languageLabel(language)}{!matchingPrints.length ? ' — unavailable for this card' : ''}</option>)}</select><span className="language-filter-note">{effectiveLanguage ? `Showing ${visiblePrints.length} ${languageLabel(effectiveLanguage)} print${visiblePrints.length === 1 ? '' : 's'}` : 'No translated prints available'}</span></label><div className="available-arts-panel original-arts-section"><div className="available-arts-heading"><div><span className="panel-kicker">ORIGINAL ARTS FOR THIS CARD</span><strong>{visiblePrints.length ? `${visiblePrints.length} print${visiblePrints.length === 1 ? '' : 's'} available` : 'No prints in this language'}</strong></div>{originalImage && <img src={originalImage} alt={`Selected art for ${cardTitle(card)}`} />}</div><div className="available-arts-grid">{visiblePrints.map((print) => <button key={print.id} type="button" className={`available-art ${card.selectedPrint?.id === print.id ? 'selected' : ''}`} onClick={() => onSelectPrint(print.id)} disabled={!print.imageUri}><span className="available-art-image">{print.imageUri ? <img loading="lazy" src={print.imageUri} alt={`${cardTitle(card)} — ${print.displayName}`} /> : <ImagePlus size={16} />}</span><span className="available-art-meta"><strong>{print.displayName}</strong><span>{languageLabel(print.language)} · {print.set.toUpperCase()} {print.collectorNumber}</span></span>{card.selectedPrint?.id === print.id && <CheckCircle2 className="available-art-check" size={16} />}</button>)}</div></div></div>
 }
 
 function languageLabel(language: string): string {
-  const labels: Record<string, string> = { en: 'EN', pt: 'PT-BR', 'pt-br': 'PT-BR', es: 'ES', fr: 'FR', de: 'DE', it: 'IT', ja: 'JA', ko: 'KO', ru: 'RU', zhs: 'ZH-S', zht: 'ZH-T' }
+  const labels: Record<string, string> = { en: 'English / EN', pt: 'Português (Brasil) / pt-BR', 'pt-br': 'Português (Brasil) / pt-BR', es: 'Español / ES', fr: 'Français / FR', de: 'Deutsch / DE', it: 'Italiano / IT', ja: '日本語 / JA', ko: '한국어 / KO', ru: 'Русский / RU', zhs: '简体中文 / ZH-S', zht: '繁體中文 / ZH-T' }
   return labels[language.toLowerCase()] || language.toUpperCase()
 }
 

@@ -1,0 +1,65 @@
+
+[pnpm install]
+$ pnpm install --no-frozen-lockfile
+Already up to date
+Done in 695ms using pnpm v11.24.0
+[pnpm install] exit=0
+
+[tsc]
+$ pnpm exec tsc -b --pretty false
+[tsc] exit=0
+
+[vitest]
+$ pnpm test -- --run
+$ vitest run -- --run
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.11 [39m[90m/home/ubuntu/projects/update-project-35bc5ada/project[39m
+
+ [32m✓[39m src/core/core.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m8 passed[39m[22m[90m (8)[39m
+[2m   Start at [22m 15:20:56
+[2m   Duration [22m 444ms[2m (transform 87ms, setup 0ms, import 212ms, tests 14ms, environment 0ms)[22m
+
+[vitest] exit=0
+
+[vite build]
+$ pnpm run build
+$ tsc -b && vite build
+vite v8.2.2 building client environment for production...
+transforming...
+[32m✓[0m 2013 modules transformed.
+rendering chunks...
+computing gzip size...
+[2mdist/[0m[32mindex.html                      [0m[1;2m  0.46 kB[0m[2m │ gzip:   0.30 kB[0m
+[2mdist/[0m[2massets/[0m[35mindex-BiyjrSqZ.css       [0m[1;2m 46.92 kB[0m[2m │ gzip:  10.08 kB[0m
+[2mdist/[0m[2massets/[0m[36mpurify.es-ChwZkWde.js    [0m[1;2m 26.81 kB[0m[2m │ gzip:  10.65 kB[0m
+[2mdist/[0m[2massets/[0m[36mindex.es-BvsDZIXi.js     [0m[1;2m151.40 kB[0m[2m │ gzip:  48.89 kB[0m
+[2mdist/[0m[2massets/[0m[36mhtml2canvas-CtPtMt7a.js  [0m[1;2m199.49 kB[0m[2m │ gzip:  46.77 kB[0m
+[2mdist/[0m[2massets/[0m[36mindex-C9WPDLM2.js        [0m[33;1m650.16 kB[0m[2m │ gzip: 209.01 kB[0m
+
+✓ built in 4.07s
+[plugin builtin:vite-reporter] [33;1m
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.[0m
+[33m[PLUGIN_TIMINGS] [0mYour build spent 91% of 4.1s inside plugin hooks (3.7s).
+Measured inside the callback, so queue time is excluded and time the callback itself awaited is not:
+  - vite:prepare-out-dir renderStart (87%, 3.5s, 1 call)
+Those rows are 87% of the build; the rest of the 91% is below.
+Not measurable — 1 hook whose calls overlap, so elapsed time covers work other calls were doing. Profile with `node --cpu-prof`:
+  - vite:css-post renderChunk (4 calls)
+See https://rolldown.rs/reference/InputOptions.checks#plugintimings for more details.
+
+[vite build] exit=0
+
+[asset audit]
+$ python3 scripts/audit-cardconjurer-assets.py
+{"json": "/home/ubuntu/projects/update-project-35bc5ada/project/docs/cardconjurer-assets-audit.json", "markdown": "/home/ubuntu/projects/update-project-35bc5ada/project/docs/cardconjurer-assets-audit.md", "scannedFiles": 401, "uniqueReferences": 4247, "staticReferences": 4193, "dynamicOrNonFileReferences": 54, "available": 4167, "missing": 26}
+[asset audit] exit=0
+
+[cargo check] SKIPPED: cargo is not installed in this environment
+
+FINAL_STATUS=0

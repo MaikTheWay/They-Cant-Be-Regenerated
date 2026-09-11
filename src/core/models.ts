@@ -78,7 +78,25 @@ export interface ArtAsset {
   dataUrl: string
   width?: number
   height?: number
+  sourceType?: 'local' | 'community'
+  sourceName?: string
+  sourceUrl?: string
+  licenseUrl?: string
+  attribution?: string
 }
+
+export type CardConjurerDocument = Record<string, unknown> & {
+  width?: number
+  height?: number
+  version?: string
+  frames?: Array<Record<string, unknown>>
+  text?: Record<string, Record<string, unknown>>
+  artSource?: string
+  setSymbolSource?: string
+  watermarkSource?: string
+}
+
+export type CardRepresentation = 'original' | 'editor' | 'custom'
 
 export interface CardDefinition {
   id: string
@@ -93,6 +111,10 @@ export interface CardDefinition {
   artSource?: 'original' | 'custom'
   customArt?: ArtAsset
   transform: ArtTransform
+  activeRepresentation?: CardRepresentation
+  cardConjurerDocument?: CardConjurerDocument
+  editorPreviewDataUrl?: string
+  editorPreviewUpdatedAt?: string
   resolverMessage?: string
 }
 
@@ -128,7 +150,7 @@ export interface PrintSettings {
 }
 
 export interface ProjectFile {
-  version: 1
+  version: 2
   name: string
   createdAt: string
   updatedAt: string
@@ -201,6 +223,14 @@ export function isBasicLand(card?: CardData): boolean {
 }
 
 export function imageForCard(card?: CardDefinition): string | undefined {
-  return card?.customArt?.dataUrl || card?.selectedImageUri || card?.data?.imageUris?.normal || card?.data?.imageUris?.large
+  if (!card) return undefined
+  if (card.activeRepresentation === 'editor' && card.editorPreviewDataUrl) return card.editorPreviewDataUrl
+  if (card.activeRepresentation === 'custom' && card.customArt?.dataUrl) return card.customArt.dataUrl
+  return card.selectedImageUri || card.data?.imageUris?.normal || card.data?.imageUris?.large
 }
 
+export function normalizeLanguage(language?: string): string {
+  const normalized = (language || '').trim().toLowerCase().replace('_', '-')
+  if (normalized === 'pt-br' || normalized === 'pt') return 'pt'
+  return normalized
+}

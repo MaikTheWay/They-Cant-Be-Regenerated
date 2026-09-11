@@ -62,22 +62,36 @@ export function calculatePageLayout(cards: CardDefinition[], settings: PrintSett
   return { width: page.width, height: page.height, cardsPerPage, columns, rows, positions, pageCount }
 }
 
+export type CardRenderFunction = (card: CardDefinition) => Promise<string>
+
+const imageDataCache = new Map<string, Promise<string>>()
+
 async function imageDataForCard(card: CardDefinition): Promise<string> {
   const source = imageForCard(card)
   if (!source) throw new Error(`Imagem original indisponível para ${card.data?.name || card.inputName}.`)
   if (source.startsWith('data:')) return source
-  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+  const cached = imageDataCache.get(source)
+  if (cached) return cached
+  const pending = new Promise<string>((resolve, reject) => {
     const element = new Image()
     element.crossOrigin = 'anonymous'
-    element.onload = () => resolve(element)
+    element.onload = () => {
+      const canvas = document.createElement('canvas')
+      canvas.width = element.naturalWidth || element.width
+      canvas.height = element.naturalHeight || element.height
+      canvas.getContext('2d')!.drawImage(element, 0, 0)
+      resolve(canvas.toDataURL('image/png'))
+    }
     element.onerror = () => reject(new Error(`Não foi possível carregar a imagem original de ${card.data?.name || card.inputName}.`))
     element.src = source
   })
-  const canvas = document.createElement('canvas')
-  canvas.width = image.naturalWidth || image.width
-  canvas.height = image.naturalHeight || image.height
-  canvas.getContext('2d')!.drawImage(image, 0, 0)
-  return canvas.toDataURL('image/png')
+  imageDataCache.set(source, pending)
+  try {
+    return await pending
+  } catch (error) {
+    imageDataCache.delete(source)
+    throw error
+  }
 }
 
 function drawCropMarks(pdf: jsPDF, x: number, y: number, width: number, height: number, settings: PrintSettings): void {
@@ -105,7 +119,12 @@ function drawBlackCorners(pdf: jsPDF, x: number, y: number, width: number, heigh
   pdf.rect(x + width - size, y + height - size, size, size, 'F')
 }
 
-export async function generatePdf(cards: CardDefinition[], settings: PrintSettings, onProgress?: (done: number, total: number) => void): Promise<{ blob: Blob; layout: PageLayout; cardCount: number }> {
+function documentSignature(card: CardDefinition): string {
+  if (!card.cardConjurerDocument) return 'none'
+  try { return JSON.stringify(card.cardConjurerDocument) } catch { return card.editorPreviewUpdatedAt || 'document' }
+}
+
+export async function generatePdf(cards: CardDefinition[], settings: PrintSettings, onProgress?: (done: number, total: number) => void, renderCard?: CardRenderFunction): Promise<{ blob: Blob; layout: PageLayout; cardCount: number }> {
   const expanded = expandCards(cards, settings)
   const layout = calculatePageLayout(cards, settings)
   const pdf = new jsPDF({ unit: 'mm', format: [layout.width, layout.height], orientation: settings.orientation })
@@ -113,8 +132,13 @@ export async function generatePdf(cards: CardDefinition[], settings: PrintSettin
   const total = expanded.length
   for (let index = 0; index < expanded.length; index += 1) {
     const card = expanded[index]
-    const key = `${card.id}:${card.customArt?.id || card.selectedImageUri || card.data?.imageUris?.normal || 'default'}`
-    if (!rendered.has(key)) rendered.set(key, await imageDataForCard(card))
+    const key = `${card.id}:${card.activeRepresentation || 'original'}:${card.customArt?.id || card.selectedImageUri || card.data?.imageUris?.normal || 'default'}:${documentSignature(card)}`
+    if (!rendered.has(key)) {
+      const image = renderCard && card.activeRepresentation === 'editor' && card.cardConjurerDocument
+        ? await renderCard(card)
+        : await imageDataForCard(card)
+      rendered.set(key, image)
+    }
     const pageIndex = Math.floor(index / layout.cardsPerPage)
     const slot = index % layout.cardsPerPage
     if (index > 0 && slot === 0) pdf.addPage([layout.width, layout.height], settings.orientation)

@@ -9,6 +9,13 @@ function normalizeLine(line: string): string {
     .trim()
 }
 
+function normalizeDeckLanguage(value: string): string | undefined {
+  const normalized = value.trim().toLocaleLowerCase().replace('_', '-')
+  if (['pt', 'pt-br', 'por', 'portuguese', 'portugues', 'português'].includes(normalized)) return 'pt'
+  if (/^[a-z]{2}$/.test(normalized)) return normalized
+  return undefined
+}
+
 function parseBracketMetadata(raw: string): { name: string; set?: string; collectorNumber?: string; language?: string } {
   const metadata: { name: string; set?: string; collectorNumber?: string; language?: string } = { name: raw.trim() }
   const groups = [...raw.matchAll(/\[([^\]]+)\]/g)].map((match) => match[1].trim())
@@ -16,9 +23,10 @@ function parseBracketMetadata(raw: string): { name: string; set?: string; collec
 
   for (const group of groups) {
     const parts = group.split(/[\s,|/]+/).filter(Boolean)
-    if (parts.length === 1 && /^[a-z]{2,5}$/i.test(parts[0])) {
-      if (parts[0].length === 2) metadata.language = parts[0].toLowerCase()
-      else metadata.set = parts[0].toLowerCase()
+    if (parts.length === 1) {
+      const language = normalizeDeckLanguage(parts[0])
+      if (language) metadata.language = language
+      else if (/^[a-z0-9]{2,6}$/i.test(parts[0])) metadata.set = parts[0].toLowerCase()
     } else if (parts.length >= 2 && /^[a-z0-9]{2,6}$/i.test(parts[0])) {
       metadata.set = parts[0].toLowerCase()
       metadata.collectorNumber = parts.slice(1).join(' ')
@@ -75,4 +83,3 @@ export function aggregateEntries(entries: ParsedDeckEntry[]): ParsedDeckEntry[] 
 export function totalCards(entries: ParsedDeckEntry[]): number {
   return entries.reduce((total, entry) => total + entry.quantity, 0)
 }
-

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { aggregateEntries, parseDeckText, totalCards } from './deckParser'
 import { calculatePageLayout, expandCards } from './pdfExport'
-import { DEFAULT_PRINT_SETTINGS, type CardDefinition } from './models'
+import { DEFAULT_PRINT_SETTINGS, imageForCard, normalizeLanguage, type CardDefinition } from './models'
 
 describe('deck parser', () => {
   it('parses quantity, comments, set metadata and common separators', () => {
@@ -17,6 +17,12 @@ describe('deck parser', () => {
     expect(entries).toHaveLength(1)
     expect(entries[0].quantity).toBe(5)
     expect(totalCards(entries)).toBe(5)
+  })
+
+  it('parses Portuguese language aliases without treating them as set codes', () => {
+    expect(parseDeckText('1 Forest [pt-BR]')[0]).toMatchObject({ name: 'Forest', language: 'pt' })
+    expect(parseDeckText('1 Forest [pt_BR]')[0]).toMatchObject({ name: 'Forest', language: 'pt' })
+    expect(parseDeckText('1 Forest [Português]')[0]).toMatchObject({ name: 'Forest', language: 'pt' })
   })
 })
 
@@ -49,3 +55,27 @@ describe('print layout', () => {
   })
 })
 
+describe('card representations and languages', () => {
+  it('normalizes the provider Portuguese code without changing the UI meaning', () => {
+    expect(normalizeLanguage('pt-BR')).toBe('pt')
+    expect(normalizeLanguage('pt')).toBe('pt')
+    expect(normalizeLanguage('EN')).toBe('en')
+  })
+
+  it('keeps original, custom art and editor preview independent', () => {
+    const card: CardDefinition = {
+      id: 'representations',
+      quantity: 1,
+      inputName: 'Card',
+      status: 'validated',
+      selectedImageUri: 'data:image/png;base64,original',
+      customArt: { id: 'art', fileName: 'art.png', mimeType: 'image/png', dataUrl: 'data:image/png;base64,custom' },
+      editorPreviewDataUrl: 'data:image/png;base64,editor',
+      activeRepresentation: 'original',
+      transform: { x: 0, y: 0, scale: 1, rotation: 0, flipX: false, flipY: false, fit: 'cover' },
+    }
+    expect(imageForCard(card)).toContain('original')
+    expect(imageForCard({ ...card, activeRepresentation: 'custom' })).toContain('custom')
+    expect(imageForCard({ ...card, activeRepresentation: 'editor' })).toContain('editor')
+  })
+})

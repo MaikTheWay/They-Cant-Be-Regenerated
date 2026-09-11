@@ -21,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' https://cards.scryfall.io https://api.scryfall.com; img-src 'self' data: blob: https://cards.scryfall.io; connect-src 'self' https://api.scryfall.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com"
+      "csp": "default-src 'self' https://cards.scryfall.io https://api.scryfall.com https://api.github.com https://raw.githubusercontent.com https://madelson.github.io; script-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://cards.scryfall.io https://madelson.github.io; connect-src 'self' https://api.scryfall.com https://api.github.com https://raw.githubusercontent.com https://madelson.github.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com"
     }
   },
   "bundle": {
@@ -30,4 +30,3 @@
     "icon": []
   }
 }
-

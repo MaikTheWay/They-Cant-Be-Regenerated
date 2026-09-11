@@ -1,8 +1,8 @@
-import type { CardData, CardDefinition, CardPrint, CardStatus, ParsedDeckEntry } from './models'
+import { normalizeLanguage, type CardData, type CardDefinition, type CardPrint, type CardStatus, type ParsedDeckEntry } from './models'
 
 const API_ROOT = 'https://api.scryfall.com'
 const CARD_CACHE_KEY = 'tcbr-card-cache-v2'
-const PRINT_CACHE_KEY = 'tcbr-print-cache-v1'
+const PRINT_CACHE_KEY = 'tcbr-print-cache-v2'
 const CACHE_TTL = 1000 * 60 * 60 * 24 * 30
 const REQUEST_TIMEOUT = 9000
 
@@ -53,6 +53,8 @@ type ScryfallSearchResponse = {
 
 const inflight = new Map<string, Promise<ScryfallCard | null>>()
 const inflightPrints = new Map<string, Promise<CardPrint[]>>()
+let requestQueue = Promise.resolve()
+let nextRequestAt = 0
 
 function readCache<T>(key: string): Record<string, { savedAt: number; value: T }> {
   try {
@@ -156,14 +158,24 @@ function resolverKey(entry: ParsedDeckEntry): string {
 }
 
 async function requestJson<T>(url: string): Promise<{ ok: boolean; status: number; value?: T }> {
-  try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT) })
-    let value: T | undefined
-    try { value = await response.json() as T } catch { value = undefined }
-    return { ok: response.ok, status: response.status, value }
-  } catch {
-    throw new Error('Unable to resolve card: network unavailable or request timed out.')
-  }
+  const scheduled = requestQueue.then(async () => {
+    const wait = Math.max(0, nextRequestAt - Date.now())
+    if (wait) await new Promise((resolve) => window.setTimeout(resolve, wait))
+    nextRequestAt = Date.now() + 500
+    try {
+      const response = await fetch(url, {
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT),
+      })
+      let value: T | undefined
+      try { value = await response.json() as T } catch { value = undefined }
+      return { ok: response.ok, status: response.status, value }
+    } catch {
+      throw new Error('Unable to resolve card: network unavailable or request timed out.')
+    }
+  })
+  requestQueue = scheduled.then(() => undefined, () => undefined)
+  return scheduled
 }
 
 async function fetchCard(entry: ParsedDeckEntry): Promise<ScryfallCard | null> {
@@ -204,9 +216,22 @@ async function fetchPrints(card: ScryfallCard): Promise<CardPrint[]> {
 
   const task = (async () => {
     const query = `oracleid:${oracleId}`
-    const response = await requestJson<ScryfallSearchResponse>(`${API_ROOT}/cards/search?q=${encodeURIComponent(query)}&unique=prints&order=released`)
+    const response = await requestJson<ScryfallSearchResponse>(`${API_ROOT}/cards/search?q=${encodeURIComponent(query)}&unique=prints&order=released&dir=desc`)
     if (!response.ok || !response.value?.data?.length) return [toPrint(card)]
     const prints = response.value.data.map(toPrint)
+    // Scryfall paginates large oracleId result sets and the first page is not
+    // guaranteed to contain a translated printing. Fetch Portuguese only when
+    // it is absent so the Stage 2 language control remains functional without
+    // multiplying requests for every supported language.
+    if (!prints.some((print) => normalizeLanguage(print.language) === 'pt')) {
+      try {
+        const portuguese = await requestJson<ScryfallSearchResponse>(`${API_ROOT}/cards/search?q=${encodeURIComponent(`${query} lang:pt`)}&unique=prints&order=released&dir=desc`)
+        if (portuguese.ok && portuguese.value?.data?.length) prints.push(...portuguese.value.data.map(toPrint))
+      } catch {
+        // Portuguese is an enhancement; a transient secondary request must not
+        // turn an otherwise valid official card into an unresolved definition.
+      }
+    }
     const deduped = [...new Map(prints.map((print) => [print.id, print])).values()]
     writeCache(PRINT_CACHE_KEY, cacheKey, deduped)
     return deduped
@@ -217,7 +242,7 @@ async function fetchPrints(card: ScryfallCard): Promise<CardPrint[]> {
 
 function selectInitialPrint(prints: CardPrint[], entry: ParsedDeckEntry, data: CardData): CardPrint | undefined {
   return prints.find((print) => entry.set && entry.collectorNumber && print.set === entry.set && print.collectorNumber === entry.collectorNumber)
-    || prints.find((print) => entry.language && print.language === entry.language)
+    || prints.find((print) => entry.language && normalizeLanguage(print.language) === normalizeLanguage(entry.language))
     || prints.find((print) => print.id === data.scryfallId)
     || prints[prints.length - 1]
 }
@@ -254,7 +279,7 @@ export async function resolveDeck(entries: ParsedDeckEntry[], onProgress?: (done
         data: result.data,
         availablePrints: result.prints,
         selectedPrint: result.selectedPrint,
-        selectedLanguage: result.selectedPrint?.language || result.data?.language || entry.language || 'en',
+        selectedLanguage: normalizeLanguage(result.selectedPrint?.language || result.data?.language || entry.language || 'en'),
         selectedImageUri: result.selectedPrint?.imageUri || result.data?.imageUris?.normal,
         artSource: 'original',
 
@@ -272,5 +297,6 @@ export async function resolveDeck(entries: ParsedDeckEntry[], onProgress?: (done
 export function clearCardCache(): void {
   localStorage.removeItem(CARD_CACHE_KEY)
   localStorage.removeItem(PRINT_CACHE_KEY)
+  localStorage.removeItem('tcbr-print-cache-v1')
+  localStorage.removeItem('tcbr-community-artwork-index-v1')
 }
-

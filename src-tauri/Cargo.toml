@@ -2,7 +2,7 @@
 name = "they-cant-be-regenerated"
 version = "0.1.0"
 description = "Local card art and print workbench"
-authors = ["Manus AI"]
+authors = ["Maik The Way"]
 edition = "2021"
 
 [lib]
