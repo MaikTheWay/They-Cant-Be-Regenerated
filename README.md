@@ -190,6 +190,10 @@ O motor de exportação calcula dimensões em milímetros e posiciona as cartas 
 
 O Blob final é validado antes do download. A exportação é bloqueada quando existem cartas não resolvidas.
 
+## Tutorial para iniciantes
+
+Usuários sem experiência com programação devem seguir [`TUTORIAL.md`](TUTORIAL.md). O documento contém passos separados para Windows e Linux, instalação do Node.js e pnpm, extração do ZIP, execução do servidor, uso da aplicação, testes, build e resolução de erros comuns.
+
 ## Limitações conhecidas
 
 O bundle principal pode exceder o limite informativo de 500 kB do Vite devido ao renderer CardConjurer, `html2canvas` e às bibliotecas PDF. Esse aviso não impede o build nem a execução.
