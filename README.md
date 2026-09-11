@@ -204,7 +204,13 @@ O código de integração deste projeto deve ser distinguido do código e dos as
 
 ## Referências
 
+* [Scryfall API Documentation][1]
+* [Vite Guide][2]
+* [Tauri Documentation][3]
+* [MDN — showSaveFilePicker][4]
+
 [1]: https://scryfall.com/docs/api "Scryfall API Documentation"
 [2]: https://vite.dev/guide/ "Vite Guide"
 [3]: https://v2.tauri.app/ "Tauri Documentation"
 [4]: https://developer.mozilla.org/en-US/docs/Web/API/Window/showSaveFilePicker "MDN showSaveFilePicker"
+
